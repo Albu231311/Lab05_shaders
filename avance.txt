@@ -1,0 +1,255 @@
+use nalgebra_glm::{Vec3, dot};
+use crate::color::Color;
+use crate::noise::{continent_noise, cloud_noise, sun_noise, gas_bands, fractal_noise};
+
+pub fn earth_shader(world_pos: Vec3, normal: Vec3, light_dir: Vec3, time: f32) -> Color {
+    let sphere_pos = world_pos.normalize();
+
+    // === CAPA 1: BASE AZUL OSCURA (MAR) ===
+    let mut base_color = Color::new(25, 25, 112); // Azul marino oscuro
+
+    // === CAPA 2: CASQUETES POLARES ===
+    let latitude = sphere_pos.y.abs();
+    let ice_factor = if latitude > 0.8 {
+        ((latitude - 0.8) / 0.2).clamp(0.0, 1.0) * 0.9
+    } else {
+        0.0
+    };
+
+    let ice_color = Color::new(255, 255, 255);
+    let terrain_with_ice = if ice_factor > 0.1 {
+        let r = (base_color.r() as f32 * (1.0 - ice_factor) + ice_color.r() as f32 * ice_factor).clamp(0.0, 255.0);
+        let g = (base_color.g() as f32 * (1.0 - ice_factor) + ice_color.g() as f32 * ice_factor).clamp(0.0, 255.0);
+        let b = (base_color.b() as f32 * (1.0 - ice_factor) + ice_color.b() as f32 * ice_factor).clamp(0.0, 255.0);
+        Color::new(r as u8, g as u8, b as u8)
+    } else {
+        base_color
+    };
+
+    // === CAPA 3: CONTINENTES CON COSTAS IRREGULARES ===
+    let x = sphere_pos.x;
+    let y = sphere_pos.y;
+    let z = sphere_pos.z;
+    
+    // Patrones base para masas continentales grandes
+    let continent_pattern1 = (x * 2.0).sin() * (z * 1.5).cos();
+    let continent_pattern2 = (y * 1.0 + z * 2.5).cos() * (x * 1.8).sin();
+    let continent_pattern3 = (z * 2.2).sin() * (y * 1.5 + x * 1.3).cos();
+    
+    // MÚLTIPLES capas de detalles para crear cortes y golfos
+    let coast_detail1 = (x * 8.0).sin() * (z * 10.0).cos() * 0.2;
+    let coast_detail2 = (x * 12.0 + z * 8.0).sin() * (y * 15.0).cos() * 0.15;
+    let coast_detail3 = (z * 18.0).cos() * (x * 14.0 + y * 10.0).sin() * 0.12;
+    
+    // Detalles finos para bahías y penínsulas
+    let fine_detail = ((x * 25.0).sin() * (z * 30.0).cos() + (y * 20.0).sin() * (x * 22.0).cos()) * 0.08;
+    
+    // Combinar todo con los detalles afectando los bordes
+    let base_continent = (continent_pattern1 * 0.5 + continent_pattern2 * 0.35 + continent_pattern3 * 0.15);
+    let all_details = coast_detail1 + coast_detail2 + coast_detail3 + fine_detail;
+    
+    // Los detalles afectan más los bordes (donde continent_density está cerca del umbral)
+    let continent_density = base_continent + all_details;
+    
+    // Reducir continentes en los polos
+    let pole_mask = if latitude < 0.65 { 1.0 } else { 0.0 };
+    
+    // Umbral más selectivo para crear más cortes
+    let continent_factor = if continent_density > 0.15 && pole_mask > 0.5 {
+        let factor = ((continent_density - 0.15) / 0.85).clamp(0.0, 1.0);
+        // Hacer transiciones más abruptas para costas más definidas
+        if factor > 0.3 {
+            factor * 0.85
+        } else {
+            factor * 0.4
+        }
+    } else {
+        0.0
+    };
+
+    // Color verde oscuro para los continentes
+    let continent_color = Color::new(34, 139, 34); // Verde bosque oscuro
+    let terrain_with_continents = if continent_factor > 0.2 {
+        let r = (terrain_with_ice.r() as f32 * (1.0 - continent_factor) + continent_color.r() as f32 * continent_factor).clamp(0.0, 255.0);
+        let g = (terrain_with_ice.g() as f32 * (1.0 - continent_factor) + continent_color.g() as f32 * continent_factor).clamp(0.0, 255.0);
+        let b = (terrain_with_ice.b() as f32 * (1.0 - continent_factor) + continent_color.b() as f32 * continent_factor).clamp(0.0, 255.0);
+        Color::new(r as u8, g as u8, b as u8)
+    } else {
+        terrain_with_ice
+    };
+
+    // === CAPA 4: NUBES BLANCAS (REDUCIDAS) ===
+    let cloud_pattern1 = (x * 6.0 + time * 0.5).sin() * (y * 5.0).cos();
+    let cloud_pattern2 = (z * 7.0 + time * 0.3).cos() * (x * 3.0 + time * 0.2).sin();
+    let cloud_density = (cloud_pattern1 + cloud_pattern2 * 0.5) / 1.5;
+    
+    let cloud_factor = if cloud_density > 0.45 {
+        ((cloud_density - 0.45) / 0.55).clamp(0.0, 1.0) * 0.4
+    } else {
+        0.0
+    };
+
+    // Mezclar superficie con nubes blancas
+    let cloud_color = Color::new(255, 255, 255);
+    let final_color = if cloud_factor > 0.2 {
+        let blend = cloud_factor;
+        let r = (terrain_with_continents.r() as f32 * (1.0 - blend) + cloud_color.r() as f32 * blend).clamp(0.0, 255.0);
+        let g = (terrain_with_continents.g() as f32 * (1.0 - blend) + cloud_color.g() as f32 * blend).clamp(0.0, 255.0);
+        let b = (terrain_with_continents.b() as f32 * (1.0 - blend) + cloud_color.b() as f32 * blend).clamp(0.0, 255.0);
+        Color::new(r as u8, g as u8, b as u8)
+    } else {
+        terrain_with_continents
+    };
+
+    // === ILUMINACIÓN ===
+    let light_dir_normalized = light_dir.normalize();
+    let diffuse = dot(&normal, &light_dir_normalized).max(0.0) * 0.8;
+    let ambient = 0.3;
+    let intensity = (diffuse + ambient).min(1.0);
+
+    let r = (final_color.r() as f32 * intensity).clamp(0.0, 255.0);
+    let g = (final_color.g() as f32 * intensity).clamp(0.0, 255.0);
+    let b = (final_color.b() as f32 * intensity).clamp(0.0, 255.0);
+
+    Color::new(r as u8, g as u8, b as u8)
+}
+
+pub fn sun_shader(world_pos: Vec3, normal: Vec3, _light_dir: Vec3, time: f32) -> Color {
+    let surface_turbulence = sun_noise(world_pos, time);
+    
+    let core_color = Color::new(255, 255, 100);
+    let hot_color = Color::new(255, 150, 50);
+    let flare_color = Color::new(255, 50, 0);
+    
+    let base_color = if surface_turbulence < 0.3 {
+        core_color
+    } else if surface_turbulence < 0.7 {
+        let t = (surface_turbulence - 0.3) / 0.4;
+        Color::new(
+            (core_color.r() as f32 * (1.0 - t) + hot_color.r() as f32 * t) as u8,
+            (core_color.g() as f32 * (1.0 - t) + hot_color.g() as f32 * t) as u8,
+            (core_color.b() as f32 * (1.0 - t) + hot_color.b() as f32 * t) as u8,
+        )
+    } else {
+        flare_color
+    };
+    
+    let spot_noise = fractal_noise(world_pos * 1.5, 3);
+    let spot_factor = if spot_noise > 0.8 {
+        ((spot_noise - 0.8) / 0.2) * 0.5
+    } else {
+        0.0
+    };
+    
+    let spot_color = Color::new(150, 80, 20);
+    let surface_with_spots = if spot_factor > 0.0 {
+        Color::new(
+            (base_color.r() as f32 * (1.0 - spot_factor) + spot_color.r() as f32 * spot_factor) as u8,
+            (base_color.g() as f32 * (1.0 - spot_factor) + spot_color.g() as f32 * spot_factor) as u8,
+            (base_color.b() as f32 * (1.0 - spot_factor) + spot_color.b() as f32 * spot_factor) as u8,
+        )
+    } else {
+        base_color
+    };
+    
+    let view_dir = Vec3::new(0.0, 0.0, 1.0);
+    let fresnel = 1.0 - dot(&normal, &view_dir).abs();
+    let corona_factor = fresnel.powf(2.0) * 0.6;
+    
+    let corona_color = Color::new(255, 200, 100);
+    let surface_with_corona = if corona_factor > 0.0 {
+        Color::new(
+            (surface_with_spots.r() as f32 + corona_color.r() as f32 * corona_factor).min(255.0) as u8,
+            (surface_with_spots.g() as f32 + corona_color.g() as f32 * corona_factor).min(255.0) as u8,
+            (surface_with_spots.b() as f32 + corona_factor).min(255.0) as u8,
+        )
+    } else {
+        surface_with_spots
+    };
+    
+    let pulse = (time * 3.0).sin() * 0.1 + 0.9;
+    
+    Color::new(
+        (surface_with_corona.r() as f32 * pulse) as u8,
+        (surface_with_corona.g() as f32 * pulse) as u8,
+        (surface_with_corona.b() as f32 * pulse) as u8,
+    )
+}
+
+pub fn gas_giant_shader(world_pos: Vec3, normal: Vec3, light_dir: Vec3, time: f32) -> Color {
+    let band_pattern = gas_bands(world_pos, time);
+    
+    let band1_color = Color::new(200, 150, 100);
+    let band2_color = Color::new(150, 100, 80);
+    let band3_color = Color::new(100, 80, 120);
+    
+    let base_color = if band_pattern < 0.33 {
+        band1_color
+    } else if band_pattern < 0.66 {
+        band2_color
+    } else {
+        band3_color
+    };
+    
+    let turbulence = fractal_noise(world_pos * 2.0 + Vec3::new(time * 0.1, 0.0, 0.0), 4);
+    let storm_factor = if turbulence > 0.7 {
+        ((turbulence - 0.7) / 0.3) * 0.4
+    } else {
+        0.0
+    };
+    
+    let storm_color = Color::new(220, 200, 180);
+    let surface_with_storms = if storm_factor > 0.0 {
+        Color::new(
+            (base_color.r() as f32 * (1.0 - storm_factor) + storm_color.r() as f32 * storm_factor) as u8,
+            (base_color.g() as f32 * (1.0 - storm_factor) + storm_color.g() as f32 * storm_factor) as u8,
+            (base_color.b() as f32 * (1.0 - storm_factor) + storm_color.b() as f32 * storm_factor) as u8,
+        )
+    } else {
+        base_color
+    };
+    
+    let spot_center = Vec3::new(0.3, 0.0, 0.0);
+    let distance_to_spot = (world_pos - spot_center).magnitude();
+    let spot_factor = if distance_to_spot < 0.3 {
+        (1.0 - distance_to_spot / 0.3) * 0.7
+    } else {
+        0.0
+    };
+    
+    let red_spot_color = Color::new(180, 80, 60);
+    let surface_with_spot = if spot_factor > 0.0 {
+        Color::new(
+            (surface_with_storms.r() as f32 * (1.0 - spot_factor) + red_spot_color.r() as f32 * spot_factor) as u8,
+            (surface_with_storms.g() as f32 * (1.0 - spot_factor) + red_spot_color.g() as f32 * spot_factor) as u8,
+            (surface_with_storms.b() as f32 * (1.0 - spot_factor) + red_spot_color.b() as f32 * spot_factor) as u8,
+        )
+    } else {
+        surface_with_storms
+    };
+    
+    let view_dir = Vec3::new(0.0, 0.0, 1.0);
+    let fresnel = 1.0 - dot(&normal, &view_dir).abs();
+    let atmosphere_factor = fresnel.powf(4.0) * 0.3;
+    
+    let atmosphere_color = Color::new(200, 180, 160);
+    let final_color = if atmosphere_factor > 0.0 {
+        Color::new(
+            (surface_with_spot.r() as f32 * (1.0 - atmosphere_factor) + atmosphere_color.r() as f32 * atmosphere_factor) as u8,
+            (surface_with_spot.g() as f32 * (1.0 - atmosphere_factor) + atmosphere_color.g() as f32 * atmosphere_factor) as u8,
+            (surface_with_spot.b() as f32 * (1.0 - atmosphere_factor) + atmosphere_color.b() as f32 * atmosphere_factor) as u8,
+        )
+    } else {
+        surface_with_spot
+    };
+    
+    let diffuse = dot(&normal, &light_dir).max(0.0) * 0.8;
+    let ambient = 0.3;
+    let intensity = (diffuse + ambient).min(1.0);
+    
+    Color::new(
+        (final_color.r() as f32 * intensity) as u8,
+        (final_color.g() as f32 * intensity) as u8,
+        (final_color.b() as f32 * intensity) as u8,
+    )
+}

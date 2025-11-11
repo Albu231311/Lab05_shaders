@@ -1,0 +1,10 @@
+[package]
+name = "Lab05"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nalgebra-glm = "0.18"
+minifb = "0.27"
+tobj = "4.0"
+raylib = "5.5.1"
